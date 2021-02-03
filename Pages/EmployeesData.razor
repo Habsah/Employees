@@ -1,0 +1,167 @@
+﻿@page "/"
+
+@inject IJSRuntime JsRuntime
+@inject IRepository Repository
+
+<h1>Employees</h1>
+
+@if (employees == null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <div id="employee-form" class="form form-inline">
+        <input id="employee-id" type="hidden" @bind="model.Id" class="form-control" />
+        <label for="employee-full-name">Name</label>
+        <input id="employee-full-name" type="text" @bind="model.FullName" class="form-control" />
+        <label for="employee-join-date">Join Date</label>
+        <input id="employee-join-date" type="date" @bind="model.JoinDate" class="form-control" />
+        <label for="employee-supervisor-id">Supervisor</label>
+        <select id="employee-supervisor-id" type="text" @bind="model.SupervisorId" class="form-control">
+            <option value="0"></option>
+            @foreach (var employee in employees)
+            {
+                if (!editMode || employee.Id != model.Id)
+                {
+                    <option value="@employee.Id">@employee.FullName</option>
+                }
+            }
+        </select>
+        <div class="btn-group">
+            <button type="button" class="btn btn-secondary" @onclick="@InitiateOrRefresh">New</button>
+            <button type="button" class="btn btn-success" @onclick="@SaveEmployee" disabled="@editMode">Add</button>
+            <button type="button" class="btn btn-primary" @onclick="@SaveEmployee" disabled="@(!editMode)">Save</button>
+        </div>
+    </div>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Full Name</th>
+                <th>Join Date</th>
+                <th>Supervisor Name</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var employee in employees)
+            {
+                <tr>
+                    <td>@employee.FullName</td>
+                    <td>@employee.JoinDate?.Date.ToShortDateString()</td>
+                    <td>@employee.SupervisorName</td>
+                    <td class="btn-group">
+                        <button type="button" class="btn btn-link" @onclick="() => EditEmployee(employee.Id)">Edit</button>
+                        <button type="button" class="btn btn-link" @onclick="() => DeleteEmployee(employee.Id)">Delete</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<Employee> employees;
+    private Employee model;
+    private bool editMode;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await InitiateOrRefresh();
+    }
+
+    private async Task EnsureTableCreation()
+    {
+        await Task.FromResult(Repository.Execute(@"IF NOT (EXISTS (SELECT Top 1 * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Employees'))
+        BEGIN
+            CREATE TABLE Employees(
+            Id INT IDENTITY(1,1) NOT NULL,
+            FullName NVARCHAR(50) NULL,
+            JoinDate DATE NULL,
+            SupervisorId INT NULL,
+            CONSTRAINT PK_EmployeeId PRIMARY KEY(Id),
+            CONSTRAINT FK_EmployeeSupervisorId FOREIGN KEY(SupervisorId) REFERENCES Employees(Id)
+            );
+        END"));
+    }
+
+    private async Task GetAllEmployees()
+    {
+        employees = await Task.FromResult(Repository.GetAll<Employee>("SELECT *, (SELECT FullName FROM Employees WHERE Id = A.SupervisorId) AS SupervisorName FROM Employees AS A"));
+    }
+
+    private async Task SaveEmployee()
+    {
+        if (string.IsNullOrEmpty(model.FullName))
+        {
+            await ShowAlertMessage("Please, Enter the full name!");
+            return;
+        }
+
+        try
+        {
+            if (model.Id == 0)
+                await Task.FromResult(Repository.Execute($"INSERT INTO Employees(FullName, JoinDate, SupervisorId) VALUES({PrepareSqlValues(model.FullName)}, {PrepareSqlValues(model.JoinDate)}, {PrepareSqlValues(model.SupervisorId)})"));
+            else
+                await Task.FromResult(Repository.Execute($"UPDATE Employees SET FullName = {PrepareSqlValues(model.FullName)}, JoinDate = {PrepareSqlValues(model.JoinDate)}, SupervisorId = {PrepareSqlValues(model.SupervisorId)} WHERE Id = {model.Id}"));
+
+            await InitiateOrRefresh();
+
+        }
+        catch (Exception e)
+        {
+            await ShowAlertMessage("Saving failed!"); // probably because the employer is trying to be a manager of his current manager
+        }
+
+    }
+
+    private async Task EditEmployee(int id)
+    {
+        if (id > 0)
+        {
+            model = await Task.FromResult(Repository.Get<Employee>($"SELECT * FROM Employees WHERE Id = {id}"));
+            editMode = true;
+        }
+    }
+
+    private async Task DeleteEmployee(int id)
+    {
+        var confirmed = await ShowConfirmMessage("Are you sure?");
+        if (confirmed && id > 0)
+        {
+            try
+            {
+                await Task.FromResult(Repository.Execute($"DELETE FROM Employees WHERE Id = {id}"));
+                await InitiateOrRefresh();
+            }
+            catch (Exception e)
+            {
+                await ShowAlertMessage("Deletion failed!"); // probably because the employee is a supervisor to another employee
+            }
+        }
+    }
+
+    private async Task InitiateOrRefresh()
+    {
+        await GetAllEmployees();
+        model = new Employee();
+        editMode = false;
+    }
+
+    private static object PrepareSqlValues(object value)
+    {
+        return value switch
+        {
+            null => "NULL",
+            0 => "NULL",
+            DateTime date => $"'{date.Date:yyyy-MM-dd}'",
+            string str => $"'{str}'",
+            _ => $"{value}"
+        };
+    }
+
+    private async Task ShowAlertMessage(string message) => await JsRuntime.InvokeAsync<object>("alert", message);
+
+    private async Task<bool> ShowConfirmMessage(string message) => await JsRuntime.InvokeAsync<bool>("confirm", message);
+}
